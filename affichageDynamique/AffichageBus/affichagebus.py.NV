@@ -1,0 +1,236 @@
+import pygame
+import requests
+import sys
+import time
+import os
+from datetime import datetime, timedelta
+
+API_URL    = "https://data.lillemetropole.fr/data/ogcapi/collections/ilevia:prochains_passages/items?f=json&limit=-1"
+VLILLE_URL = "https://data.lillemetropole.fr/geoserver/wfs?SERVICE=WFS&REQUEST=GetFeature&VERSION=2.0.0&TYPENAMES=dsp_ilevia%3Avlille_temps_reel&OUTPUTFORMAT=application%2Fjson"
+METEO_URL  = "https://api.open-meteo.com/v1/forecast?latitude=50.6333&longitude=3.0667&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,weather_code&current_weather=true&timezone=Europe/Paris"
+ACTUAL_URL  = "https://api.open-meteo.com/v1/forecast?latitude=50.633&longitude=3.0586&models=meteofrance_seamless&current=temperature_2m,relative_humidity_2m&forecast_days=1"
+NOM_STATION    = "SOLFERINO"
+STATION_VLILLE = "PALAIS RAMEAU"
+
+UPDATE_EVENT = pygame.USEREVENT + 1
+UPDATE_INTERVAL = 60_000
+
+pygame.init()
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+pygame.mouse.set_visible(False)
+
+info = pygame.display.Info()
+WIDTH, HEIGHT = info.current_w, info.current_h
+
+LEFT_W  = WIDTH * 2 // 3
+RIGHT_W = WIDTH - LEFT_W
+LEFT_RECT  = pygame.Rect(0, 0, LEFT_W, HEIGHT)
+RIGHT_RECT = pygame.Rect(LEFT_W, 0, RIGHT_W, HEIGHT)
+
+font       = pygame.font.Font(None, 60)
+small_font = pygame.font.Font(None, 50)
+meteopanel_font = pygame.font.Font(None, 70)
+WHITE      = (255,255,255)
+BLACK      = (0,0,0)
+BLUE       = (0,102,204)
+GREEN      = (0,153,0)
+RED        = (255,0,0)
+GRAY       = (200,200,200)
+DARK_RED   = (139,0,0)
+LIGHT_BLUE = (173,216,230)
+DARK_BLUE  = (70,130,180)
+ORANGE     = (252,93,51)
+PURPLE     = (63,42,85)
+
+DIRECTIONS = {
+    "L5": ["MARCQ FERME AUX OIES","HAUBOURDIN LE PARC"],
+    "18":["LOMME ANATOLE FRANCE","VILLENEUVE D'ASCQ HOTEL DE VILLE"]
+}
+
+weather_icons = {
+    "sunny" : pygame.image.load("icons/sunny.png"),
+    "cloudy": pygame.image.load("icons/cloudy.png"),
+    "rainy" : pygame.image.load("icons/rainy.png"),
+    "windy" : pygame.image.load("icons/windy.png")
+}
+
+LOGO_H = 60
+def scale_logo(img):
+    w, h = img.get_size()
+    return pygame.transform.smoothscale(img, (int(w * LOGO_H / h), LOGO_H))
+
+logo_junia  = scale_logo(pygame.image.load("icons/junia.png"))
+logo_ilevia = scale_logo(pygame.image.load("icons/ilevia.png"))
+logos = [logo_junia, logo_ilevia]
+
+cache = {
+    "actual": {},
+    "forecast": None,
+    "vlille": None,
+    "bus_next": {},
+    "bus_records": [],
+    "last_update": None,
+    "last_error": None
+}
+
+# ==========================================================
+#   API FETCH
+# ==========================================================
+def fetch_actual():
+    try:
+        r = requests.get(ACTUAL_URL, timeout=5); r.raise_for_status()
+        d = r.json()
+        current = d.get("current", {})
+        cache["actual"]["temperature"] = current.get("temperature_2m", cache["actual"].get("temperature"))
+        cache["actual"]["humidity"]    = current.get("relative_humidity_2m", cache["actual"].get("humidity"))
+        cache["last_error"] = None
+    except Exception as e:
+        cache["last_error"] = f"Actuelle : {e}"
+    return cache["actual"]
+
+def fetch_forecast():
+    try:
+        r = requests.get(METEO_URL, timeout=10); r.raise_for_status()
+        cache["forecast"] = r.json()["daily"]
+        cache["last_error"] = None
+    except Exception as e:
+        cache["last_error"] = f"Météo: {e}"
+    return cache["forecast"]
+
+def fetch_vlille():
+    try:
+        r = requests.get(VLILLE_URL, timeout=10); r.raise_for_status()
+        for f in r.json().get("features", []):
+            p = f["properties"]
+            if p.get("nom") == STATION_VLILLE:
+                cache["vlille"] = {
+                    "nb_velos": p.get("nb_velos_dispo", 0),
+                    "nb_places": p.get("nb_places_dispo", 0)
+                }
+                break
+        cache["last_error"] = None
+    except Exception as e:
+        cache["last_error"] = f"V'Lille: {e}"
+    return cache["vlille"]
+
+def fetch_bus_next():
+    try:
+        r = requests.get(API_URL, timeout=10); r.raise_for_status()
+        recs = r.json().get("records", [])
+        if recs:
+            cache["bus_records"] = recs
+        nxt = {}
+        for line in ["L5", "18"]:
+            times = []
+            for it in cache["bus_records"]:
+                if it.get("code_ligne") == line and it.get("nom_station") == NOM_STATION:
+                    try:
+                        dt = datetime.fromisoformat(it["heure_estimee_depart"])
+                        if dt.tzinfo: dt = dt.replace(tzinfo=None)
+                        times.append(dt)
+                    except: pass
+            if times:
+                nxt[line] = min(times)
+        cache["bus_next"] = nxt
+        cache["last_error"] = None
+    except Exception as e:
+        cache["last_error"] = f"Bus: {e}"
+    return cache["bus_next"]
+
+def update_all_data():
+    fetch_actual()
+    fetch_vlille()
+    fetch_bus_next()
+    fetch_forecast()
+    cache["last_update"] = datetime.now()
+
+# ==========================================================
+#   PANNEAU DROITE
+# ==========================================================
+def draw_right_panel():
+    pygame.draw.rect(screen, PURPLE, RIGHT_RECT)
+    x0 = LEFT_W + 20
+
+    time_font = pygame.font.Font(None, 250)
+    time_str  = datetime.now().strftime("%H:%M")
+    time_surf = time_font.render(time_str, True, ORANGE)
+    time_x    = LEFT_W + (RIGHT_W - time_surf.get_width()) // 2
+    screen.blit(time_surf, (time_x, 50))
+
+# ==========================================================
+#   PAGES EXISTANTES (bus, météo, V'Lille)
+# ==========================================================
+def page_bus():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(WHITE)
+    title_txt = font.render("Bus Ilévia - Arrêt Solférino", True, BLACK)
+    surf.blit(title_txt, (20, 20))
+    screen.blit(surf, (0,0))
+
+def page_weather():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(LIGHT_BLUE)
+    title_txt = font.render("Prévisions météo", True, BLACK)
+    surf.blit(title_txt, (20, 20))
+    screen.blit(surf, (0,0))
+
+def page_vlille():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(DARK_RED)
+    title_txt = font.render("Station V'LILLE", True, WHITE)
+    surf.blit(title_txt, (20, 20))
+    screen.blit(surf, (0,0))
+
+# ==========================================================
+#   PAGES IMAGES
+# ==========================================================
+ICONS_DIR = "icons"
+image_files = [f"img{i}.png" if i>0 else "img.png" for i in range(0,11)]  # img.png, img1.png, ...
+image_files = [f for f in image_files if os.path.exists(os.path.join(ICONS_DIR, f))]
+
+def make_image_page(path):
+    def page():
+        surf = pygame.Surface((LEFT_W, HEIGHT))
+        surf.fill(BLACK)
+        try:
+            img = pygame.image.load(path)
+            img = pygame.transform.scale(img, (LEFT_W, HEIGHT))
+            surf.blit(img, (0,0))
+        except Exception as e:
+            err = font.render(f"Erreur image {path}", True, RED)
+            surf.blit(err, (50, HEIGHT//2))
+        screen.blit(surf, (0,0))
+    return page
+
+image_pages = [make_image_page(os.path.join(ICONS_DIR, f)) for f in image_files]
+
+# ==========================================================
+#   MAIN LOOP
+# ==========================================================
+def main():
+    pages = [page_bus, page_weather, page_vlille] + image_pages
+    PAGE_DURATIONS = [10] * len(pages)  # 10 sec chacune
+
+    idx, t0 = 0, time.time()
+    clock = pygame.time.Clock()
+    pygame.time.set_timer(UPDATE_EVENT, UPDATE_INTERVAL)
+    update_all_data()
+
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif ev.type == UPDATE_EVENT:
+                update_all_data()
+
+        if time.time() - t0 > PAGE_DURATIONS[idx]:
+            idx = (idx + 1) % len(pages)
+            t0 = time.time()
+
+        pages[idx]()
+        draw_right_panel()
+        pygame.display.flip()
+        clock.tick(15)
+
+if __name__=="__main__":
+    main()

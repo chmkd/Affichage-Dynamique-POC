@@ -1,0 +1,280 @@
+import pygame
+import requests
+import sys, os, json, time
+from datetime import datetime, timedelta
+
+# ===================== CONFIG ======================
+SERVER_URL = "http://10.224.0.154:8000/api"  # <-- adapte à l’IP de ton serveur
+NOM_STATION    = "SOLFERINO"
+STATION_VLILLE = "PALAIS RAMEAU"
+
+PAGE_DURATIONS = [10, 10, 10]   # secondes par page
+UPDATE_EVENT = pygame.USEREVENT + 1
+UPDATE_INTERVAL = 60_000        # ms
+
+BASE_DIR = os.path.dirname(__file__)
+CACHE_DIR = os.path.join(BASE_DIR, "..", "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ===================== CACHE UTILS ======================
+def save_local(fname, data):
+    try:
+        with open(os.path.join(CACHE_DIR, fname), "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[Cache] Erreur save_local({fname}):", e)
+
+def load_local(fname):
+    try:
+        with open(os.path.join(CACHE_DIR, fname), "r") as f:
+            return json.load(f)
+    except:
+        return None
+
+# ===================== PYGAME INIT ======================
+pygame.init()
+pygame.mouse.set_visible(False)
+info = pygame.display.Info()
+WIDTH, HEIGHT = info.current_w, info.current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+
+LEFT_W  = WIDTH * 2 // 3
+RIGHT_W = WIDTH - LEFT_W
+LEFT_RECT  = pygame.Rect(0, 0, LEFT_W, HEIGHT)
+RIGHT_RECT = pygame.Rect(LEFT_W, 0, RIGHT_W, HEIGHT)
+
+font       = pygame.font.Font(None, 60)
+small_font = pygame.font.Font(None, 50)
+meteopanel_font = pygame.font.Font(None, 70)
+
+WHITE      = (255,255,255)
+BLACK      = (0,0,0)
+BLUE       = (0,102,204)
+GREEN      = (0,153,0)
+RED        = (255,0,0)
+GRAY       = (200,200,200)
+DARK_RED   = (139,0,0)
+LIGHT_BLUE = (173,216,230)
+DARK_BLUE  = (70,130,180)
+ORANGE     = (252,93,51)
+PURPLE     = (63,42,85)
+
+# ===================== DONNÉES ======================
+DIRECTIONS = {
+    "L5": ["MARCQ FERME AUX OIES","HAUBOURDIN LE PARC"],
+    "18":["LOMME ANATOLE FRANCE","VILLENEUVE D'ASCQ HOTEL DE VILLE"]
+}
+
+weather_icons = {
+    "sunny" : pygame.image.load("icons/sunny.png"),
+    "cloudy": pygame.image.load("icons/cloudy.png"),
+    "rainy" : pygame.image.load("icons/rainy.png"),
+    "windy" : pygame.image.load("icons/windy.png")
+}
+
+cache = {
+    "actual": {},
+    "forecast": None,
+    "vlille": None,
+    "bus_next": {},
+    "bus_records": [],
+    "last_update": None,
+    "last_error": None
+}
+
+# ===================== FETCH ======================
+def fetch_actual():
+    try:
+        r = requests.get(f"{SERVER_URL}/meteo", timeout=5); r.raise_for_status()
+        meteo = r.json().get("meteo", {})
+        actual = {
+            "temperature": meteo.get("current_weather", {}).get("temperature"),
+            "humidity": "--"  # pas dispo dans ton JSON
+        }
+        cache["actual"] = actual
+        save_local("meteo.json", actual)
+        cache["last_error"] = None
+    except Exception as e:
+        cache["actual"] = load_local("meteo.json") or {}
+        cache["last_error"] = f"Meteo offline: {e}"
+    return cache["actual"]
+
+def fetch_forecast():
+    try:
+        r = requests.get(f"{SERVER_URL}/meteo", timeout=5); r.raise_for_status()
+        meteo = r.json().get("meteo", {})
+        cache["forecast"] = meteo.get("daily")
+        save_local("forecast.json", cache["forecast"])
+        cache["last_error"] = None
+    except Exception as e:
+        cache["forecast"] = load_local("forecast.json")
+        cache["last_error"] = f"Forecast offline: {e}"
+    return cache["forecast"]
+
+def fetch_vlille():
+    try:
+        r = requests.get(f"{SERVER_URL}/vlille", timeout=5); r.raise_for_status()
+        features = r.json().get("vlille", {}).get("features", [])
+        for f in features:
+            p = f["properties"]
+            if p.get("nom", "").lower() == STATION_VLILLE.lower():
+                cache["vlille"] = {
+                    "nb_velos": p.get("nb_velos_dispo", 0),
+                    "nb_places": p.get("nb_places_dispo", 0)
+                }
+                break
+        save_local("vlille.json", cache["vlille"])
+        cache["last_error"] = None
+    except Exception as e:
+        cache["vlille"] = load_local("vlille.json") or {}
+        cache["last_error"] = f"VLille offline: {e}"
+    return cache["vlille"]
+
+def fetch_bus_next():
+    try:
+        r = requests.get(f"{SERVER_URL}/bus", timeout=5); r.raise_for_status()
+        recs = r.json().get("bus", {}).get("records", [])
+        cache["bus_records"] = recs
+        save_local("bus.json", recs)
+        nxt = {}
+        for line in ["L5", "18"]:
+            times = []
+            for it in recs:
+                if it.get("code_ligne") == line and it.get("nom_station") == NOM_STATION:
+                    try:
+                        dt = datetime.fromisoformat(it["heure_estimee_depart"].split("+")[0])
+                        times.append(dt)
+                    except:
+                        pass
+            if times: nxt[line] = min(times)
+        cache["bus_next"] = nxt
+        cache["last_error"] = None
+    except Exception as e:
+        cache["bus_records"] = load_local("bus.json") or []
+        cache["last_error"] = f"Bus offline: {e}"
+    return cache["bus_next"]
+
+def update_all_data():
+    fetch_actual()
+    fetch_vlille()
+    fetch_bus_next()
+    fetch_forecast()
+    cache["last_update"] = datetime.now()
+
+# ===================== PANNEAU DROITE ======================
+def draw_right_panel():
+    pygame.draw.rect(screen, PURPLE, RIGHT_RECT)
+    x0 = LEFT_W + 20
+
+    # Horloge
+    time_font = pygame.font.Font(None, 250)
+    time_str  = datetime.now().strftime("%H:%M")
+    time_surf = time_font.render(time_str, True, ORANGE)
+    time_x    = LEFT_W + (RIGHT_W - time_surf.get_width()) // 2
+    screen.blit(time_surf, (time_x, 50))
+
+    # Bloc météo
+    actual = cache["actual"]
+    block_x, block_y = x0, 250
+    block_w, block_h = RIGHT_W - 40, 200
+    pygame.draw.rect(screen, WHITE, (block_x, block_y, block_w, block_h), border_radius=12)
+
+    title_txt = font.render("Météo actuelle", True, BLACK)
+    screen.blit(title_txt, (block_x + (block_w - title_txt.get_width()) // 2, block_y + 25))
+
+    t = actual.get("temperature", "--")
+    h = actual.get("humidity", "--")
+    txt_temp  = meteopanel_font.render(f"{t}°C", True, BLACK)
+    txt_humid = meteopanel_font.render(f"{h}",  True, BLACK)
+    screen.blit(txt_temp,  (block_x + 50, block_y + 120))
+    screen.blit(txt_humid, (block_x + block_w//2, block_y + 120))
+
+    # Statut
+    status_txt = "ONLINE" if cache["last_error"] is None else "OFFLINE"
+    color = GREEN if status_txt == "ONLINE" else RED
+    stxt = small_font.render(f"Mode {status_txt}", True, color)
+    screen.blit(stxt, (x0, HEIGHT - 80))
+
+# ===================== PAGES ======================
+def page_bus():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(WHITE)
+    title_txt = font.render(f"Bus Ilévia - Arrêt {NOM_STATION}", True, BLACK)
+    surf.blit(title_txt, (20, 20))
+    y = 100
+    now = datetime.now()
+
+    for line, color in [("L5", BLUE), ("18", GREEN)]:
+        surf.blit(font.render(line, True, color), (20, y)); y += 60
+        passages = []
+        for it in cache["bus_records"]:
+            if it.get("code_ligne") == line and it.get("nom_station") == NOM_STATION:
+                try:
+                    dt = datetime.fromisoformat(it["heure_estimee_depart"].split("+")[0])
+                    passages.append(dt)
+                except:
+                    pass
+        passages = sorted(passages)[:2]
+        for dt in passages:
+            delta = int((dt - now).total_seconds() / 60)
+            delay = "imminent" if delta == 0 else f"dans {delta} min"
+            surf.blit(small_font.render(f"{dt.strftime('%H:%M')} {delay}", True, BLACK), (60, y))
+            y += 40
+        y += 30
+    screen.blit(surf, (0, 0))
+
+def page_vlille():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(DARK_RED)
+    title = font.render(f"Station V'LILLE - {STATION_VLILLE}", True, WHITE)
+    surf.blit(title, (20, 20))
+    vl = cache.get("vlille", {})
+    if not vl:
+        surf.blit(font.render("Données indisponibles", True, WHITE), (100, HEIGHT//2))
+    else:
+        nbv, nbp = vl.get("nb_velos", 0), vl.get("nb_places", 0)
+        surf.blit(font.render(f"{nbv} vélos / {nbp} places", True, WHITE), (100, HEIGHT//2))
+    screen.blit(surf, (0, 0))
+
+def page_weather():
+    surf = pygame.Surface((LEFT_W, HEIGHT))
+    surf.fill(LIGHT_BLUE)
+    f = cache.get("forecast")
+    title = font.render("Prévisions météo", True, BLACK)
+    surf.blit(title, (20, 20))
+    if f:
+        for i in range(1, 4):
+            try:
+                dt = datetime.fromisoformat(f["time"][i])
+                date_str = dt.strftime("%a %d %b")
+            except:
+                date_str = f["time"][i]
+            txt = small_font.render(
+                f"{date_str} : {f['temperature_2m_max'][i]}°/{f['temperature_2m_min'][i]}°",
+                True, BLACK
+            )
+            surf.blit(txt, (50, 100 + i*60))
+    screen.blit(surf, (0, 0))
+
+# ===================== MAIN ======================
+def main():
+    pages = [page_bus, page_weather, page_vlille]
+    idx, t0 = 0, time.time()
+    clock = pygame.time.Clock()
+    pygame.time.set_timer(UPDATE_EVENT, UPDATE_INTERVAL)
+    update_all_data()
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif ev.type == UPDATE_EVENT:
+                update_all_data()
+        if time.time() - t0 > PAGE_DURATIONS[idx]:
+            idx = (idx + 1) % len(pages); t0 = time.time()
+        pages[idx]()
+        draw_right_panel()
+        pygame.display.flip()
+        clock.tick(15)
+
+if __name__=="__main__":
+    main()

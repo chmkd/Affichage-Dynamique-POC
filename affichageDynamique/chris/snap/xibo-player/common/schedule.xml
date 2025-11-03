@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<schedule generated="2025-Sep-24 19:29:31">
+    <layout file="6" fromdt="2025-Sep-24 20:00:00" todt="2025-Sep-25 00:00:00" scheduleid="1" priority="1">
+        <dependents>
+            <file>26.jpg</file>
+        </dependents>
+    </layout>
+    <layout file="6" fromdt="2025-Sep-24 20:00:00" todt="2025-Sep-25 00:00:00" scheduleid="3" priority="1">
+        <dependents>
+            <file>26.jpg</file>
+        </dependents>
+    </layout>
+    <layout file="6" fromdt="2025-Sep-24 20:02:00" todt="2025-Sep-25 00:00:00" scheduleid="2" priority="1">
+        <dependents>
+            <file>26.jpg</file>
+        </dependents>
+    </layout>
+    <overlays/>
+    <dependants>
+        <file>jquery.min.js</file>
+        <file>xibo-layout-scaler.js</file>
+        <file>xibo-interactive-control.min.js</file>
+        <file>moment.js</file>
+        <file>xibo-text-render.js</file>
+        <file>xibo-calendar-render.js</file>
+        <file>Chart.min.js</file>
+        <file>jquery-cycle-2.1.6.min.js</file>
+        <file>flipclock.min.js</file>
+        <file>xibo-countdown-render.js</file>
+        <file>jquery.marquee.min.js</file>
+        <file>xibo-image-render.js</file>
+        <file>xibo-dataset-render.js</file>
+        <file>16.otf</file>
+        <file>17.otf</file>
+        <file>18.ttf</file>
+        <file>19.ttf</file>
+        <file>20.otf</file>
+        <file>pdf.js</file>
+        <file>pdf.worker.js</file>
+        <file>xibo-webpage-render.js</file>
+        <file>xibo-worldclock-render.js</file>
+        <file>moment-timezone.js</file>
+    </dependants>
+    <default file="4">
+        <dependents>
+            <file>1.png</file>
+        </dependents>
+    </default>
+</schedule>
