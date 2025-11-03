@@ -19,7 +19,8 @@ from datetime import datetime
 # Configuration du serveur
 #SERVER_URL = "http://192.168.1.26:8090"
 #SERVER_URL = "http://10.224.0.123:8090"
-SERVER_URL = "http://affichage.junia.local:8090"
+#SERVER_URL = "http://affichage.junia.local:8090"
+SERVER_URL = "http://192.168.1.20:8090"
 CONTENT_SYNC_INTERVAL = 60  # Synchronisation toutes les 60 secondes
 BASE_DURATIONS = [10, 10, 10]  # Durées bus, météo, v'lille en secondes
 MEDIA_DURATION_DEFAULT = 20
